@@ -15,7 +15,7 @@ export class FavNumbersService {
   ) {}
 
   async addFavNumber(user: JwtPayload, dto) {
-    const user_id = await this.userService.getUserIdByLoyaltyId(user);
+    const user_id = user.sub;
     const userExist = await this.favNumberModel.findOne({ user_id });
     if (userExist) {
       userExist.favorite_numbers.push({
@@ -35,7 +35,7 @@ export class FavNumbersService {
   }
 
   async removeFavNumber(user: JwtPayload, favoriteNumberId: string) {
-    const user_id = await this.userService.getUserIdByLoyaltyId(user);
+    const user_id =user.sub;
     const result = await this.favNumberModel.updateOne(
       { user_id },
       { $pull: { favorite_numbers: { _id: favoriteNumberId } } },
@@ -49,7 +49,7 @@ export class FavNumbersService {
 
   async getAllNumbers(@GetUser() user: JwtPayload) {
     try {
-      const user_id = await this.userService.getUserIdByLoyaltyId(user);
+      const user_id = user.sub;
       const userData = await this.favNumberModel.findOne({ user_id });
       if (!userData) return [];
       if (userData?.favorite_numbers == undefined) {

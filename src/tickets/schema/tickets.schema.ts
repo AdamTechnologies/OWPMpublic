@@ -19,6 +19,9 @@ export class tickets {
   number: number[];
 
   @Prop()
+  payment_intent: string;
+
+  @Prop()
   date: Date;
 
   @Prop()

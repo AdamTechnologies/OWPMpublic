@@ -19,6 +19,10 @@ export class purchaseDto {
   // @IsString()
   password: string;
 
+  @IsNotEmpty()
+  @IsString()
+  payment_intent:string;
+
   @IsArray()
   @ArrayMinSize(7)
   @ArrayMaxSize(7)

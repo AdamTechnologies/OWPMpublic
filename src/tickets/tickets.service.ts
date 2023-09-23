@@ -2,13 +2,13 @@ import {
   ConflictException,
   HttpException,
   Injectable,
+  InternalServerErrorException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { tickets } from './schema/tickets.schema';
 import { Model } from 'mongoose';
 import { JwtPayload } from 'src/auth/stragtegies';
-import axios from 'axios';
 import { getNextMonthOrToday, getNextSundayDate } from '../shared/utils/utils';
 import { MailerService } from '@nestjs-modules/mailer/dist';
 import { purchaseDto } from './dto';
@@ -16,62 +16,74 @@ import * as puppeteer from 'puppeteer';
 import { htmlContent } from 'src/shared/constants/certficate.html';
 import { UserService } from 'src/user/user.service';
 import { ticketNumber } from 'src/shared/constants/ticket';
+import { PastDraws } from 'src/past-draws/schema/past_draws.schema';
+import Stripe from 'stripe';
 
 @Injectable()
 export class TicketsService {
+  private stripe: Stripe;
+
   constructor(
     @InjectModel(tickets.name) private readonly ticketModel: Model<tickets>,
+    @InjectModel(PastDraws.name)
+    private readonly pastDrawModel: Model<PastDraws>,
     private readonly mailService: MailerService,
     private readonly userService: UserService,
-  ) {}
-
-  async purchaseTicket(dto: purchaseDto, user: JwtPayload, token) {
-    const userData = await this.userService.getUserById(user.sub);
-    const user_id = user.sub;
-    const ticketExist = await this.ticketModel.findOne({
-      $or: [{ date: dto.date }],
-      number: { $eq: dto.number },
+  ) {
+    this.stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+      apiVersion: '2023-08-16',
     });
+  }
 
-    if (ticketExist) {
-      throw new ConflictException('Series already selected');
+  async createTransaction(user: JwtPayload) {
+    const email = user.email;
+    const amount = 10;
+    let customer: any;
+    const existingCustomers = await this.stripe.customers.list({
+      email: email,
+      limit: 1,
+    });
+    if (existingCustomers.data.length > 0) {
+      customer = existingCustomers.data[0];
+    } else {
+      customer = await this.stripe.customers.create({
+        email: email,
+      });
     }
-    const bodyFormData = {
-      amount: 20,
-      reason: `Ticket Purchase`,
-      password: dto.password,
-      txn_app: 'OWP_MILLIONERE',
-    };
-    // try {
-    //   const response = await axios.post(
-    //     `${process.env.LOYALTY_API}/wallet/purchase`,
-    //     bodyFormData,
-    //     {
-    //       headers: { Authorization: `Bearer ${token}` },
-    //     },
-    //   );
-    // } catch (error) {
-    //   console.log(error.response.data);
-    //   throw new HttpException(error.response.data.data, 400);
-    // }
 
-    const raffle_id = await this.generateUniqueRaffleID();
-    const ticket = await this.ticketModel.create({
-      user_id: user_id,
-      number: dto.number,
-      raffle_id,
-      date: dto.date,
-      country: userData.country_code,
-      purchase_date:Date.now
+    // Create a payment intent
+    const paymentIntent = await this.stripe.paymentIntents.create({
+      amount: amount * 100,
+      currency: 'USD',
+      customer: customer.id,
+      payment_method_types: ['card'],
     });
-    const mail = await this.sendMailCertificate(
-      user.email,
-      raffle_id,
-      dto.date,
-      dto.number.join(' '),
-    );
-    console.log(mail);
-    return ticket;
+
+    return paymentIntent.client_secret;
+  }
+
+
+  async purchaseTicket(dto: purchaseDto, user: JwtPayload) {
+    await this.validatePaymentIntent(dto.payment_intent)
+    // const userData = await this.userService.getUserById(user.sub);
+    // const user_id = user.sub;
+    // const raffle_id = await this.generateUniqueRaffleID();
+    // const ticket = await this.ticketModel.create({
+    //   user_id: user_id,
+    //   number: dto.number,
+    //   raffle_id,
+    //   date: dto.date,
+    //   country: userData.country_code,
+    //   purchase_date: Date.now,
+    // });
+    // const mail = await this.sendMailCertificate(
+    //   user.email,
+    //   raffle_id,
+    //   dto.date,
+    //   dto.number.join(' '),
+    // );
+    // console.log(mail);
+    // return ticket;
   }
 
   async getTicketNumbers() {
@@ -92,7 +104,7 @@ export class TicketsService {
     });
 
     const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    const idLength = 10; // Adjust the desired length of your raffle ID
+    const idLength = 10; 
 
     let raffle_id = '';
 
@@ -219,18 +231,14 @@ export class TicketsService {
         left: '0px',
       },
     });
-
-    // Set the HTML content with styles and background images
     await page.setContent(htmlContent);
 
-    // Wait for all elements with class "background-image-class" to load background images
     await page.waitForSelector('.background-image-class', { visible: true });
 
-    // Regenerate the PDF with the updated content and get the PDF buffer
     const pdfBuffer = await page.pdf({
-      width: '500px', // Use the same width as before
-      height: '758px', // Use the same height as before
-      printBackground: true, // Include background colors and images
+      width: '500px',
+      height: '758px',
+      printBackground: true,
       margin: {
         top: '0px',
         right: '0px',
@@ -238,8 +246,6 @@ export class TicketsService {
         left: '0px',
       },
     });
-
-    // Close the browser
     await browser.close();
 
     return pdfBuffer;
@@ -272,11 +278,70 @@ export class TicketsService {
     return { tickets, totalCount: tickets.length };
   }
 
-  async getDailyTickets(dto){
-    const ticket = await this.ticketModel.find({date:dto.date})
+  async getDailyTickets(dto) {
+    const ticket = await this.ticketModel.find({ date: dto.date });
     return {
       ticket,
-      ticketCount: ticket.length
+      ticketCount: ticket.length,
+    };
+  }
+
+  async claimTicket(user: JwtPayload, dto) {
+    const pastDraw = await this.pastDrawModel
+      .findOne()
+      .sort({ created_at: -1 });
+    const ticket = await this.ticketModel.findOne({
+      raffle_id: dto.raffle_id,
+      number: { $eq: pastDraw.winning_number },
+    });
+    if (ticket) {
+      return { message: 'Your certificate has the winning number' };
+    } else {
+      throw new ConflictException("The winning number doesn't match");
+    }
+  }
+
+  private async validatePaymentIntent(
+    paymentIntentId,
+  ): Promise<{ isValid: boolean }> {
+    const transactionExists = await this.validatePaymentIntend(paymentIntentId);
+    if (!transactionExists)
+      throw new ConflictException('This payment already exists');
+    const paymentIntent = await this.retrievePaymentIntent(paymentIntentId);
+    const isValid = paymentIntent.status === 'succeeded';
+    return { isValid };
+  }
+
+  async validatePaymentIntend(paymentIntentId: string) {
+    try {
+      const result = await this.ticketModel.findOne({
+        payment_intent: paymentIntentId,
+      });
+      if (result)
+        throw new HttpException('Payment with this id already used', 400);
+      return true;
+    } catch (error) {
+      if (error instanceof HttpException) {
+        throw new HttpException('Payment with this id already used', 400);
+      } else {
+        throw new InternalServerErrorException();
+      }
+    }
+  }
+
+  async retrievePaymentIntent(
+    paymentIntentId: string,
+  ): Promise<Stripe.PaymentIntent> {
+    try {
+      const paymentIntent = await this.stripe.paymentIntents.retrieve(
+        paymentIntentId,
+      );
+      console.log(paymentIntent);
+      
+      return paymentIntent;
+    } catch (error) {
+      console.error('Failed to retrieve payment intent:', error);
+      throw new Error('Failed to retrieve payment intent');
     }
   }
 }

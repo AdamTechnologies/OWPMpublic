@@ -20,10 +20,20 @@ import { RoleGuard } from 'src/shared/guards';
 export class TicketsController {
   constructor(private readonly ticketService: TicketsService) {}
 
-  @Post('/purchase')
-  purchase(@GetUser() user: JwtPayload, @Body() dto: purchaseDto, @Req() req) {
-    const token = req.headers.authorization.split(' ')[1];
-    return this.ticketService.purchaseTicket(dto, user, token);
+  // @Post('/purchase')
+  // purchase(@GetUser() user: JwtPayload, @Body() dto: purchaseDto, @Req() req) {
+  //   const token = req.headers.authorization.split(' ')[1];
+  //   return this.ticketService.purchaseTicket(dto, user, token);
+  // }
+
+  @Post('/create-payment')
+  createPayment(@GetUser() user: JwtPayload){
+    return this.ticketService.createTransaction(user)
+  }
+
+  @Post('/purchase-ticket')
+  purchaseTicket(@GetUser() user: JwtPayload,@Body()dto:purchaseDto){
+    return this.ticketService.purchaseTicket(dto,user)
   }
 
   @Get('/')
@@ -53,5 +63,10 @@ export class TicketsController {
   @Post('/daily')
   getDailyTicket(@Body() dto) {
     return this.ticketService.getDailyTickets(dto);
+  }
+
+  @Post('/claim-ticket')
+  claimTicket(@Body() dto,@GetUser() user: JwtPayload) {
+    return this.ticketService.claimTicket(user,dto);
   }
 }
